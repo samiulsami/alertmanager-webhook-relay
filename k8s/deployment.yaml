@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager-relay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: alertmanager-relay
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: alertmanager-relay
+    spec:
+      containers:
+      - name: alertmanager-relay
+        image: ${DOCKER_REGISTRY}/${IMAGE_NAME}:${VERSION}
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: LISTEN_ADDR
+          value: "${LISTEN_ADDR}"
+        - name: REQUEST_TIMEOUT
+          value: "${REQUEST_TIMEOUT}"
+        - name: SEND_RESOLVED
+          value: "${SEND_RESOLVED}"
+        - name: GOOGLE_CHAT_WEBHOOK_URL
+          valueFrom:
+            secretKeyRef:
+              name: ${GOOGLE_CHAT_WEBHOOK_SECRET_NAME}
+              key: url
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            memory: 128Mi

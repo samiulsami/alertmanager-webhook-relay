@@ -1,0 +1,46 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin
+testbin/*
+
+# Test binary, build with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Kubernetes Generated files - skip generated files, except for vendored files
+
+!vendor/**/zz_generated.*
+
+# editor and IDE paraphernalia
+/.idea/
+/.crush/
+/CRUSH.md
+Neotest Output Panel
+Neotest Summary
+*.swp
+*.swo
+*~
+
+__debug*
+.DS_Store
+
+*.exe
+*.test
+*.prof
+/dist
+**/junit.xml
+**/.env
+/.vscode
+/coverage.txt
+/alertmanager-relay
+
+/bin
+/.go
+
+**/apiserver.local.config

@@ -1,0 +1,125 @@
+package server
+
+import (
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"go.openviz.dev/alertmanager-relay/internal/alertmanager"
+	"go.openviz.dev/alertmanager-relay/internal/config"
+	"go.openviz.dev/alertmanager-relay/internal/googlechat"
+)
+
+type relayServer struct {
+	config  config.Config
+	sender  sender
+	metrics *metrics
+}
+
+type sender interface {
+	Send(ctx context.Context, message googlechat.Message) (int, string, error)
+}
+
+type metrics struct {
+	requests        *prometheus.CounterVec
+	upstreamLatency prometheus.Histogram
+}
+
+func New(cfg config.Config) http.Handler {
+	sender, err := googlechat.NewSender(cfg.GoogleChatURL, cfg.RequestTimeout)
+	if err != nil {
+		panic(err)
+	}
+	return newHandler(cfg, sender)
+}
+
+func newHandler(cfg config.Config, sender sender) http.Handler {
+	registry := prometheus.NewRegistry()
+	requests := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "alertmanager_relay_requests_total",
+		Help: "Total relay requests by endpoint outcome.",
+	}, []string{"endpoint", "result"})
+	upstreamLatency := prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "alertmanager_relay_google_chat_request_duration_seconds",
+		Help:    "Latency of Google Chat webhook requests.",
+		Buckets: prometheus.DefBuckets,
+	})
+	registry.MustRegister(requests, upstreamLatency)
+
+	server := &relayServer{
+		config: cfg,
+		sender: sender,
+		metrics: &metrics{
+			requests:        requests,
+			upstreamLatency: upstreamLatency,
+		},
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
+	mux.HandleFunc("/v1/ingest/google-chat", server.handleGoogleChat)
+	return mux
+}
+
+func (s *relayServer) handleGoogleChat(w http.ResponseWriter, r *http.Request) {
+	const endpoint = "google_chat"
+	if r.Method != http.MethodPost {
+		s.metrics.requests.WithLabelValues(endpoint, "invalid_method").Inc()
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		s.metrics.requests.WithLabelValues(endpoint, "invalid_body").Inc()
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
+
+	payload, err := alertmanager.Decode(body)
+	if err != nil {
+		s.metrics.requests.WithLabelValues(endpoint, "invalid_payload").Inc()
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		slog.Warn("rejected invalid alertmanager payload", "error", err)
+		return
+	}
+
+	message := googlechat.Render(payload, s.config.SendResolved)
+
+	start := time.Now()
+	statusCode, responseBody, err := s.sender.Send(r.Context(), message)
+	s.metrics.upstreamLatency.Observe(time.Since(start).Seconds())
+	if err != nil {
+		result := "upstream_error"
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(r.Context().Err(), context.DeadlineExceeded) {
+			result = "upstream_timeout"
+		}
+		s.metrics.requests.WithLabelValues(endpoint, result).Inc()
+		http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
+		slog.Error("google chat delivery failed", "status_code", statusCode, "response_body", responseBody, "error", err, "receiver", payload.Receiver, "group_key", payload.GroupKey)
+		return
+	}
+
+	if statusCode < 200 || statusCode >= 300 {
+		result := "upstream_non_2xx"
+		if statusCode == http.StatusTooManyRequests {
+			result = "upstream_rate_limited"
+		}
+		s.metrics.requests.WithLabelValues(endpoint, result).Inc()
+		http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
+		slog.Error("google chat rejected message", "status_code", statusCode, "response_body", responseBody, "receiver", payload.Receiver, "group_key", payload.GroupKey)
+		return
+	}
+
+	s.metrics.requests.WithLabelValues(endpoint, "success").Inc()
+	w.WriteHeader(http.StatusOK)
+}
