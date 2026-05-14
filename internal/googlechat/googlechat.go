@@ -8,12 +8,12 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
 
-	"go.openviz.dev/alertmanager-relay/internal/alertmanager"
+	amwebhook "github.com/prometheus/alertmanager/notify/webhook"
+	amtemplate "github.com/prometheus/alertmanager/template"
 )
 
 // Enforced by google chat
@@ -38,7 +38,7 @@ func NewSender(webhookURL string, timeout time.Duration) (*Sender, error) {
 	if parsed.Scheme == "" || parsed.Host == "" {
 		return nil, fmt.Errorf("google chat webhook url must be an absolute url")
 	}
-	switch parsed.Scheme {
+	switch strings.ToLower(parsed.Scheme) {
 	case "http", "https":
 	default:
 		return nil, fmt.Errorf("google chat webhook url must use http or https")
@@ -50,10 +50,10 @@ func NewSender(webhookURL string, timeout time.Duration) (*Sender, error) {
 	}, nil
 }
 
-func Render(payload alertmanager.Webhook, sendResolved bool) Message {
+func Render(payload amwebhook.Message, sendResolved bool) Message {
 	lines := []string{"*" + renderTitle(payload) + "*"}
 
-	bodyLines := renderAlertLines(payload, sendResolved)
+	bodyLines := renderAlertLines(payload.Alerts, sendResolved)
 	if len(bodyLines) > 0 {
 		lines = append(lines, "", "")
 		lines = append(lines, bodyLines...)
@@ -91,27 +91,21 @@ func (s *Sender) Send(ctx context.Context, message Message) (int, string, error)
 	return resp.StatusCode, strings.TrimSpace(string(respBody)), nil
 }
 
-func renderAlertLines(payload alertmanager.Webhook, sendResolved bool) []string {
-	alerts := append([]alertmanager.Alert(nil), payload.Alerts...)
-	statusRank := func(status string) int {
-		switch strings.ToLower(strings.TrimSpace(status)) {
-		case "firing":
-			return 0
-		case "resolved":
-			return 1
-		default:
-			return 2
+func renderAlertLines(alerts amtemplate.Alerts, sendResolved bool) []string {
+	ordered := append([]amtemplate.Alert(nil), alerts.Firing()...)
+	if sendResolved {
+		ordered = append(ordered, alerts.Resolved()...)
+	}
+	if len(ordered) < len(alerts) {
+		for _, alert := range alerts {
+			if alert.Status != "firing" && alert.Status != "resolved" {
+				ordered = append(ordered, alert)
+			}
 		}
 	}
-	sort.SliceStable(alerts, func(i, j int) bool {
-		return statusRank(alerts[i].Status) < statusRank(alerts[j].Status)
-	})
 
-	lines := make([]string, 0, len(alerts))
-	for _, alert := range alerts {
-		if alert.Status == "resolved" && !sendResolved {
-			continue
-		}
+	lines := make([]string, 0, len(ordered))
+	for _, alert := range ordered {
 		if len(lines) > 0 {
 			lines = append(lines, "", alertSeparator, "")
 		}
@@ -120,7 +114,7 @@ func renderAlertLines(payload alertmanager.Webhook, sendResolved bool) []string 
 	return lines
 }
 
-func renderAlertBlock(alert alertmanager.Alert) []string {
+func renderAlertBlock(alert amtemplate.Alert) []string {
 	summary := strings.TrimSpace(alert.Annotations["summary"])
 	description := strings.TrimSpace(alert.Annotations["description"])
 
@@ -144,7 +138,7 @@ func renderAlertBlock(alert alertmanager.Alert) []string {
 	return lines
 }
 
-func renderTitle(payload alertmanager.Webhook) string {
+func renderTitle(payload amwebhook.Message) string {
 	parts := make([]string, 0, 5)
 	if cluster := firstNonEmpty(payload.CommonLabels["cluster"], payload.GroupLabels["cluster"]); cluster != "" {
 		clusterUID := firstNonEmpty(payload.CommonLabels["cluster_uid"], payload.GroupLabels["cluster_uid"])
@@ -159,17 +153,17 @@ func renderTitle(payload alertmanager.Webhook) string {
 	}
 
 	counts := make([]string, 0, 2)
-	if firing := payload.CountByStatus("firing"); firing > 0 {
+	if firing := len(payload.Alerts.Firing()); firing > 0 {
 		counts = append(counts, fmt.Sprintf("FIRING:%d", firing))
 	}
-	if resolved := payload.CountByStatus("resolved"); resolved > 0 {
+	if resolved := len(payload.Alerts.Resolved()); resolved > 0 {
 		counts = append(counts, fmt.Sprintf("RESOLVED:%d", resolved))
 	}
 	if len(counts) > 0 {
 		parts = append(parts, "["+strings.Join(counts, " | ")+"]")
 	}
 
-	suffix := payload.AlertName()
+	suffix := alertName(payload)
 	if kind := firstNonEmpty(payload.GroupLabels["k8s_kind"], payload.CommonLabels["k8s_kind"]); kind != "" {
 		suffix += " - " + kind
 	}
@@ -189,16 +183,26 @@ func renderTitle(payload alertmanager.Webhook) string {
 	return strings.Join(parts, " ")
 }
 
-func renderLabels(labels map[string]string) string {
-	keys := make([]string, 0, len(labels))
-	for key := range labels {
-		keys = append(keys, key)
+func alertName(payload amwebhook.Message) string {
+	if name := strings.TrimSpace(payload.GroupLabels["alertname"]); name != "" {
+		return name
 	}
-	sort.Strings(keys)
+	if name := strings.TrimSpace(payload.CommonLabels["alertname"]); name != "" {
+		return name
+	}
+	for _, alert := range payload.Alerts {
+		if name := strings.TrimSpace(alert.Labels["alertname"]); name != "" {
+			return name
+		}
+	}
+	return "Alertmanager Notification"
+}
 
-	lines := make([]string, 0, len(keys))
-	for _, key := range keys {
-		lines = append(lines, key+": "+labels[key])
+func renderLabels(labels amtemplate.KV) string {
+	pairs := labels.SortedPairs()
+	lines := make([]string, 0, len(pairs))
+	for _, pair := range pairs {
+		lines = append(lines, pair.Name+": "+pair.Value)
 	}
 	return strings.Join(lines, "\n")
 }

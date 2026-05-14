@@ -94,7 +94,7 @@ func (s *relayServer) handleGoogleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.config.SendResolved && payload.CountByStatus("resolved") == len(payload.Alerts) {
+	if !s.config.SendResolved && len(payload.Alerts.Resolved()) == len(payload.Alerts) {
 		s.metrics.requests.WithLabelValues(endpoint, "skipped_resolved").Inc()
 		w.WriteHeader(http.StatusOK)
 		return

@@ -3,20 +3,36 @@ package googlechat
 import (
 	"strings"
 	"testing"
+	"time"
 
-	"go.openviz.dev/alertmanager-relay/internal/alertmanager"
+	amwebhook "github.com/prometheus/alertmanager/notify/webhook"
+	amtemplate "github.com/prometheus/alertmanager/template"
 )
 
-func TestRenderIncludesCoreFields(t *testing.T) {
-	payload := alertmanager.Webhook{
-		Status:       "firing",
-		GroupLabels:  map[string]string{"alertname": "HighLatency"},
-		CommonLabels: map[string]string{"namespace": "prod", "severity": "critical"},
-		Alerts: []alertmanager.Alert{
-			{Status: "firing", Labels: map[string]string{"alertname": "HighLatency", "namespace": "prod"}, Annotations: map[string]string{"summary": "API latency is above threshold"}},
-			{Status: "firing", Labels: map[string]string{"alertname": "HighLatency", "namespace": "prod"}, Annotations: map[string]string{"summary": "P99 latency exceeded 1.2s for 10m"}},
-		},
+func testWebhook(data amtemplate.Data) amwebhook.Message {
+	return amwebhook.Message{Data: &data}
+}
+
+func TestNewSenderAcceptsUppercaseScheme(t *testing.T) {
+	sender, err := NewSender("HTTPS://chat.googleapis.com/v1/spaces/test/messages?key=x&token=y", time.Second)
+	if err != nil {
+		t.Fatalf("expected uppercase scheme to be accepted, got %v", err)
 	}
+	if sender == nil {
+		t.Fatal("expected sender")
+	}
+}
+
+func TestRenderIncludesCoreFields(t *testing.T) {
+	payload := testWebhook(amtemplate.Data{
+		Status:       "firing",
+		GroupLabels:  amtemplate.KV{"alertname": "HighLatency"},
+		CommonLabels: amtemplate.KV{"namespace": "prod", "severity": "critical"},
+		Alerts: amtemplate.Alerts{
+			{Status: "firing", Labels: amtemplate.KV{"alertname": "HighLatency", "namespace": "prod"}, Annotations: amtemplate.KV{"summary": "API latency is above threshold"}},
+			{Status: "firing", Labels: amtemplate.KV{"alertname": "HighLatency", "namespace": "prod"}, Annotations: amtemplate.KV{"summary": "P99 latency exceeded 1.2s for 10m"}},
+		},
+	})
 
 	message := Render(payload, true)
 
@@ -36,14 +52,14 @@ func TestRenderIncludesCoreFields(t *testing.T) {
 }
 
 func TestRenderIncludesResolvedBulletLines(t *testing.T) {
-	payload := alertmanager.Webhook{
+	payload := testWebhook(amtemplate.Data{
 		Status:      "firing",
-		GroupLabels: map[string]string{"alertname": "DiskFull"},
-		Alerts: []alertmanager.Alert{
-			{Status: "firing", Annotations: map[string]string{"summary": "Node disk usage is high"}},
-			{Status: "resolved", Annotations: map[string]string{"summary": "Old alert should be hidden"}},
+		GroupLabels: amtemplate.KV{"alertname": "DiskFull"},
+		Alerts: amtemplate.Alerts{
+			{Status: "firing", Annotations: amtemplate.KV{"summary": "Node disk usage is high"}},
+			{Status: "resolved", Annotations: amtemplate.KV{"summary": "Old alert should be hidden"}},
 		},
-	}
+	})
 
 	message := Render(payload, true)
 
@@ -59,17 +75,17 @@ func TestRenderIncludesResolvedBulletLines(t *testing.T) {
 }
 
 func TestRenderUsesRequestedCodeBlockSections(t *testing.T) {
-	payload := alertmanager.Webhook{
+	payload := testWebhook(amtemplate.Data{
 		Status:      "firing",
-		GroupLabels: map[string]string{"alertname": "DiskFull"},
-		Alerts: []alertmanager.Alert{{
+		GroupLabels: amtemplate.KV{"alertname": "DiskFull"},
+		Alerts: amtemplate.Alerts{{
 			Status: "firing",
-			Annotations: map[string]string{
+			Annotations: amtemplate.KV{
 				"summary":     "Node disk usage is high",
 				"description": "Disk usage exceeded threshold for 15m",
 			},
 		}},
-	}
+	})
 
 	message := Render(payload, true)
 
@@ -85,14 +101,14 @@ func TestRenderUsesRequestedCodeBlockSections(t *testing.T) {
 }
 
 func TestRenderOrdersFiringBeforeResolved(t *testing.T) {
-	payload := alertmanager.Webhook{
+	payload := testWebhook(amtemplate.Data{
 		Status:      "firing",
-		GroupLabels: map[string]string{"alertname": "DiskFull"},
-		Alerts: []alertmanager.Alert{
-			{Status: "resolved", Labels: map[string]string{"alertname": "ResolvedAlert"}},
-			{Status: "firing", Labels: map[string]string{"alertname": "FiringAlert"}},
+		GroupLabels: amtemplate.KV{"alertname": "DiskFull"},
+		Alerts: amtemplate.Alerts{
+			{Status: "resolved", Labels: amtemplate.KV{"alertname": "ResolvedAlert"}},
+			{Status: "firing", Labels: amtemplate.KV{"alertname": "FiringAlert"}},
 		},
-	}
+	})
 
 	message := Render(payload, true)
 
@@ -102,14 +118,14 @@ func TestRenderOrdersFiringBeforeResolved(t *testing.T) {
 }
 
 func TestRenderCanOmitResolvedBulletLines(t *testing.T) {
-	payload := alertmanager.Webhook{
+	payload := testWebhook(amtemplate.Data{
 		Status:      "firing",
-		GroupLabels: map[string]string{"alertname": "DiskFull"},
-		Alerts: []alertmanager.Alert{
-			{Status: "firing", Annotations: map[string]string{"summary": "Node disk usage is high"}},
-			{Status: "resolved", Annotations: map[string]string{"summary": "Old alert should be hidden"}},
+		GroupLabels: amtemplate.KV{"alertname": "DiskFull"},
+		Alerts: amtemplate.Alerts{
+			{Status: "firing", Annotations: amtemplate.KV{"summary": "Node disk usage is high"}},
+			{Status: "resolved", Annotations: amtemplate.KV{"summary": "Old alert should be hidden"}},
 		},
-	}
+	})
 
 	message := Render(payload, false)
 
@@ -122,14 +138,14 @@ func TestRenderCanOmitResolvedBulletLines(t *testing.T) {
 }
 
 func TestRenderTruncatesLargeMessages(t *testing.T) {
-	payload := alertmanager.Webhook{
+	payload := testWebhook(amtemplate.Data{
 		Status:      "firing",
-		GroupLabels: map[string]string{"alertname": "HugeAlert"},
-		Alerts: []alertmanager.Alert{{
+		GroupLabels: amtemplate.KV{"alertname": "HugeAlert"},
+		Alerts: amtemplate.Alerts{{
 			Status:      "firing",
-			Annotations: map[string]string{"summary": strings.Repeat("x", 40000)},
+			Annotations: amtemplate.KV{"summary": strings.Repeat("x", 40000)},
 		}},
-	}
+	})
 
 	message := Render(payload, true)
 
