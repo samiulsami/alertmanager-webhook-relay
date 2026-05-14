@@ -117,8 +117,15 @@ func renderAlertLines(alerts amtemplate.Alerts, sendResolved bool) []string {
 func renderAlertBlock(alert amtemplate.Alert) []string {
 	summary := strings.TrimSpace(alert.Annotations["summary"])
 	description := strings.TrimSpace(alert.Annotations["description"])
+	status := strings.ToUpper(firstNonEmpty(alert.Status, "unknown"))
+	switch strings.ToLower(strings.TrimSpace(alert.Status)) {
+	case "firing":
+		status = "🔥 " + status
+	case "resolved":
+		status = "✅ " + status
+	}
 
-	header := []string{"Status: " + strings.ToUpper(firstNonEmpty(alert.Status, "unknown"))}
+	header := []string{"Status: " + status}
 	if runbook := strings.TrimSpace(alert.Annotations["runbook_url"]); runbook != "" {
 		header = append(header, "Runbook: "+runbook)
 	}

@@ -38,7 +38,7 @@ func TestRenderIncludesCoreFields(t *testing.T) {
 
 	checks := []string{
 		"*[FIRING:2] HighLatency*",
-		"```\nStatus: FIRING\n```",
+		"```\nStatus: 🔥 FIRING\n```",
 		"Labels:",
 		"Summary:",
 		"Description:",
@@ -65,6 +65,9 @@ func TestRenderIncludesResolvedBulletLines(t *testing.T) {
 
 	if !strings.Contains(message.Text, "Old alert should be hidden") {
 		t.Fatalf("expected resolved alert bullet to be included, got %q", message.Text)
+	}
+	if !strings.Contains(message.Text, "Status: ✅ RESOLVED") {
+		t.Fatalf("expected resolved alert emoji status, got %q", message.Text)
 	}
 	if !strings.Contains(message.Text, "[FIRING:1 | RESOLVED:1]") {
 		t.Fatalf("expected counts to remain visible, got %q", message.Text)
@@ -112,7 +115,7 @@ func TestRenderOrdersFiringBeforeResolved(t *testing.T) {
 
 	message := Render(payload, true)
 
-	if strings.Index(message.Text, "Status: FIRING") > strings.Index(message.Text, "Status: RESOLVED") {
+	if strings.Index(message.Text, "Status: 🔥 FIRING") > strings.Index(message.Text, "Status: ✅ RESOLVED") {
 		t.Fatalf("expected firing alerts before resolved alerts, got %q", message.Text)
 	}
 }
