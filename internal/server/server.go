@@ -76,6 +76,7 @@ func (s *relayServer) handleGoogleChat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		s.metrics.requests.WithLabelValues(endpoint, "invalid_method").Inc()
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		slog.Warn("rejected google chat relay request", "endpoint", endpoint, "result", "invalid_method", "method", r.Method)
 		return
 	}
 
@@ -83,6 +84,7 @@ func (s *relayServer) handleGoogleChat(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.metrics.requests.WithLabelValues(endpoint, "invalid_body").Inc()
 		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		slog.Warn("rejected google chat relay request", "endpoint", endpoint, "result", "invalid_body", "error", err)
 		return
 	}
 
@@ -90,13 +92,23 @@ func (s *relayServer) handleGoogleChat(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.metrics.requests.WithLabelValues(endpoint, "invalid_payload").Inc()
 		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-		slog.Warn("rejected invalid alertmanager payload", "error", err)
+		slog.Warn("rejected invalid alertmanager payload", "endpoint", endpoint, "result", "invalid_payload", "body_bytes", len(body), "error", err)
 		return
+	}
+
+	logFields := []any{
+		"endpoint", endpoint,
+		"receiver", payload.Receiver,
+		"group_key", payload.GroupKey,
+		"alerts_total", len(payload.Alerts),
+		"firing", len(payload.Alerts.Firing()),
+		"resolved", len(payload.Alerts.Resolved()),
 	}
 
 	if !s.config.SendResolved && len(payload.Alerts.Resolved()) == len(payload.Alerts) {
 		s.metrics.requests.WithLabelValues(endpoint, "skipped_resolved").Inc()
 		w.WriteHeader(http.StatusOK)
+		slog.Info("skipped resolved-only alertmanager notification", append(logFields, "result", "skipped_resolved")...)
 		return
 	}
 
@@ -104,7 +116,8 @@ func (s *relayServer) handleGoogleChat(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 	statusCode, responseBody, err := s.sender.Send(r.Context(), message)
-	s.metrics.upstreamLatency.Observe(time.Since(start).Seconds())
+	duration := time.Since(start)
+	s.metrics.upstreamLatency.Observe(duration.Seconds())
 	if err != nil {
 		result := "upstream_error"
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(r.Context().Err(), context.DeadlineExceeded) {
@@ -112,7 +125,7 @@ func (s *relayServer) handleGoogleChat(w http.ResponseWriter, r *http.Request) {
 		}
 		s.metrics.requests.WithLabelValues(endpoint, result).Inc()
 		http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
-		slog.Error("google chat delivery failed", "status_code", statusCode, "response_body", responseBody, "error", err, "receiver", payload.Receiver, "group_key", payload.GroupKey)
+		slog.Error("google chat delivery failed", append(logFields, "result", result, "status_code", statusCode, "response_body", responseBody, "duration_ms", duration.Milliseconds(), "error", err)...)
 		return
 	}
 
@@ -123,10 +136,11 @@ func (s *relayServer) handleGoogleChat(w http.ResponseWriter, r *http.Request) {
 		}
 		s.metrics.requests.WithLabelValues(endpoint, result).Inc()
 		http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
-		slog.Error("google chat rejected message", "status_code", statusCode, "response_body", responseBody, "receiver", payload.Receiver, "group_key", payload.GroupKey)
+		slog.Error("google chat rejected message", append(logFields, "result", result, "status_code", statusCode, "response_body", responseBody, "duration_ms", duration.Milliseconds())...)
 		return
 	}
 
 	s.metrics.requests.WithLabelValues(endpoint, "success").Inc()
 	w.WriteHeader(http.StatusOK)
+	slog.Info("forwarded alertmanager notification to google chat", append(logFields, "result", "success", "status_code", statusCode, "duration_ms", duration.Milliseconds())...)
 }
