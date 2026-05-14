@@ -22,14 +22,11 @@ func TestRenderIncludesCoreFields(t *testing.T) {
 
 	checks := []string{
 		"*[FIRING:2] HighLatency*",
-		"- `Status:` FIRING",
-		"- `Severity:` critical",
-		"- `Namespace:` prod",
-		"- *API latency is above threshold*",
-		"- *P99 latency exceeded 1.2s for 10m*",
-		"  - `Summary:`",
-		"  - `Labels:`",
-		"    - `alertname:` HighLatency",
+		"```\nStatus: FIRING\n```",
+		"Labels:",
+		"Summary:",
+		"Description:",
+		"alertname: HighLatency",
 	}
 	for _, check := range checks {
 		if !strings.Contains(message.Text, check) {
@@ -56,9 +53,12 @@ func TestRenderIncludesResolvedBulletLines(t *testing.T) {
 	if !strings.Contains(message.Text, "[FIRING:1 | RESOLVED:1]") {
 		t.Fatalf("expected counts to remain visible, got %q", message.Text)
 	}
+	if !strings.Contains(message.Text, alertSeparator) {
+		t.Fatalf("expected separator between alerts, got %q", message.Text)
+	}
 }
 
-func TestRenderUsesPlainDescriptionSection(t *testing.T) {
+func TestRenderUsesRequestedCodeBlockSections(t *testing.T) {
 	payload := alertmanager.Webhook{
 		Status:      "firing",
 		GroupLabels: map[string]string{"alertname": "DiskFull"},
@@ -73,14 +73,31 @@ func TestRenderUsesPlainDescriptionSection(t *testing.T) {
 
 	message := Render(payload, true)
 
-	if strings.Contains(message.Text, "```") {
-		t.Fatalf("expected description to avoid code blocks, got %q", message.Text)
+	if !strings.Contains(message.Text, "```\nDisk usage exceeded threshold for 15m\n```") {
+		t.Fatalf("expected description to be rendered as code block, got %q", message.Text)
 	}
 	if !strings.Contains(message.Text, "Description:") {
 		t.Fatalf("expected description heading, got %q", message.Text)
 	}
-	if !strings.Contains(message.Text, "  - `Description:`") {
-		t.Fatalf("expected bulleted description heading, got %q", message.Text)
+	if !strings.Contains(message.Text, "Summary:") {
+		t.Fatalf("expected summary heading, got %q", message.Text)
+	}
+}
+
+func TestRenderOrdersFiringBeforeResolved(t *testing.T) {
+	payload := alertmanager.Webhook{
+		Status:      "firing",
+		GroupLabels: map[string]string{"alertname": "DiskFull"},
+		Alerts: []alertmanager.Alert{
+			{Status: "resolved", Labels: map[string]string{"alertname": "ResolvedAlert"}},
+			{Status: "firing", Labels: map[string]string{"alertname": "FiringAlert"}},
+		},
+	}
+
+	message := Render(payload, true)
+
+	if strings.Index(message.Text, "Status: FIRING") > strings.Index(message.Text, "Status: RESOLVED") {
+		t.Fatalf("expected firing alerts before resolved alerts, got %q", message.Text)
 	}
 }
 

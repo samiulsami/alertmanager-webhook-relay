@@ -16,7 +16,10 @@ import (
 	"go.openviz.dev/alertmanager-relay/internal/alertmanager"
 )
 
+// Enforced by google chat
 const maxMessageBytes = 32000
+
+const alertSeparator = "-----------------------------------------------------------------------------------------------"
 
 type Message struct {
 	Text string `json:"text"`
@@ -45,10 +48,10 @@ func NewSender(webhookURL string, timeout time.Duration) (*Sender, error) {
 func Render(payload alertmanager.Webhook, sendResolved bool) Message {
 	var lines []string
 	lines = append(lines, "*"+renderTitle(payload)+"*")
-	lines = append(lines, renderMetaLines(payload)...)
 
 	bodyLines := renderAlertLines(payload, sendResolved)
 	if len(bodyLines) > 0 {
+		lines = append(lines, "")
 		lines = append(lines, bodyLines...)
 	}
 
@@ -85,40 +88,71 @@ func (s *Sender) Send(ctx context.Context, message Message) (int, string, error)
 }
 
 func renderAlertLines(payload alertmanager.Webhook, sendResolved bool) []string {
-	lines := make([]string, 0, len(payload.Alerts))
-	for _, alert := range payload.Alerts {
+	alerts := orderedAlerts(payload.Alerts)
+	lines := make([]string, 0, len(alerts))
+	printed := 0
+	for _, alert := range alerts {
 		if alert.Status == "resolved" && !sendResolved {
 			continue
 		}
-		summary := strings.TrimSpace(alert.Annotations["summary"])
-		description := strings.TrimSpace(alert.Annotations["description"])
-		title := firstNonEmpty(summary, alert.Labels["alertname"], alert.Fingerprint, "alert")
-		lines = append(lines, fmt.Sprintf("- *%s*", title))
-
-		lines = append(lines, renderAlertMetaLines(alert)...)
-
-		if summary != "" {
-			lines = append(lines, "  - `Summary:`")
-			lines = append(lines, renderTextLines(summary, "    ")...)
+		if printed > 0 {
+			lines = append(lines, "")
+			lines = append(lines, alertSeparator)
+			lines = append(lines, "")
 		}
-
-		if description != "" && description != summary {
-			lines = append(lines, "  - `Description:`")
-			lines = append(lines, renderTextLines(description, "    ")...)
-		}
-
-		if labelLines := renderLabelLines(alert.Labels); len(labelLines) > 0 {
-			lines = append(lines, "  - `Labels:`")
-			lines = append(lines, labelLines...)
-		}
-
-		if runbook := strings.TrimSpace(alert.Annotations["runbook_url"]); runbook != "" {
-			lines = append(lines, "  - `Runbook:` "+runbook)
-		}
-		if source := strings.TrimSpace(alert.GeneratorURL); source != "" {
-			lines = append(lines, "  - `Source:` "+source)
-		}
+		lines = append(lines, renderAlertBlock(alert)...)
+		printed++
 	}
+	return lines
+}
+
+func orderedAlerts(alerts []alertmanager.Alert) []alertmanager.Alert {
+	ordered := append([]alertmanager.Alert(nil), alerts...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		left := alertStatusOrder(ordered[i].Status)
+		right := alertStatusOrder(ordered[j].Status)
+		if left != right {
+			return left < right
+		}
+		return false
+	})
+	return ordered
+}
+
+func alertStatusOrder(status string) int {
+	if strings.EqualFold(status, "firing") {
+		return 0
+	}
+	if strings.EqualFold(status, "resolved") {
+		return 1
+	}
+	return 2
+}
+
+func renderAlertBlock(alert alertmanager.Alert) []string {
+	summary := strings.TrimSpace(alert.Annotations["summary"])
+	description := strings.TrimSpace(alert.Annotations["description"])
+
+	header := []string{"Status: " + strings.ToUpper(firstNonEmpty(alert.Status, "unknown"))}
+	if runbook := strings.TrimSpace(alert.Annotations["runbook_url"]); runbook != "" {
+		header = append(header, "Runbook: "+runbook)
+	}
+	if !alert.StartsAt.IsZero() {
+		header = append(header, "Started At: "+alert.StartsAt.Format(time.RFC3339))
+	}
+
+	lines := renderCodeBlock(strings.Join(header, "\n"))
+
+	lines = append(lines, "")
+	lines = append(lines, "Labels:")
+	lines = append(lines, renderCodeBlock(renderLabels(alert.Labels))...)
+	lines = append(lines, "")
+	lines = append(lines, "Summary:")
+	lines = append(lines, renderCodeBlock(summary)...)
+	lines = append(lines, "")
+	lines = append(lines, "Description:")
+	lines = append(lines, renderCodeBlock(description)...)
+
 	return lines
 }
 
@@ -158,35 +192,6 @@ func renderTitle(payload alertmanager.Webhook) string {
 	return strings.Join(parts, " ")
 }
 
-func renderMetaLines(payload alertmanager.Webhook) []string {
-	lines := make([]string, 0, 4)
-	lines = append(lines, "- `Status:` "+strings.ToUpper(payload.Status))
-	if severity := firstNonEmpty(payload.CommonLabels["severity"], firstAlertLabel(payload, "severity")); severity != "" {
-		lines = append(lines, "- `Severity:` "+severity)
-	}
-	if namespace := firstNonEmpty(payload.CommonLabels["namespace"], payload.GroupLabels["namespace"], payload.CommonLabels["app_namespace"], firstAlertLabel(payload, "namespace")); namespace != "" {
-		lines = append(lines, "- `Namespace:` "+namespace)
-	}
-	if job := firstNonEmpty(payload.CommonLabels["job"], firstAlertLabel(payload, "job")); job != "" {
-		lines = append(lines, "- `Job:` "+job)
-	}
-	return lines
-}
-
-func renderAlertMetaLines(alert alertmanager.Alert) []string {
-	lines := make([]string, 0, 6)
-	lines = append(lines, "  - `Status:` "+strings.ToUpper(firstNonEmpty(alert.Status, "unknown")))
-	if !alert.StartsAt.IsZero() {
-		lines = append(lines, "  - `Started At:` "+alert.StartsAt.Format(time.RFC3339))
-	}
-	for _, key := range []string{"pod", "instance", "service", "container", "job"} {
-		if value := strings.TrimSpace(alert.Labels[key]); value != "" {
-			lines = append(lines, "  - `"+displayKey(key)+":` "+value)
-		}
-	}
-	return lines
-}
-
 func renderResource(payload alertmanager.Webhook) string {
 	resourceName := firstNonEmpty(payload.GroupLabels["k8s_resource"], payload.CommonLabels["k8s_resource"])
 	namespace := firstNonEmpty(payload.GroupLabels["namespace"], payload.CommonLabels["namespace"], payload.CommonLabels["app_namespace"])
@@ -199,9 +204,9 @@ func renderResource(payload alertmanager.Webhook) string {
 	return resourceName
 }
 
-func renderLabelLines(labels map[string]string) []string {
+func renderLabels(labels map[string]string) string {
 	if len(labels) == 0 {
-		return nil
+		return ""
 	}
 	keys := make([]string, 0, len(labels))
 	for key := range labels {
@@ -211,38 +216,22 @@ func renderLabelLines(labels map[string]string) []string {
 
 	lines := make([]string, 0, len(keys))
 	for _, key := range keys {
-		lines = append(lines, "    - `"+key+":` "+labels[key])
+		lines = append(lines, key+": "+labels[key])
 	}
-	return lines
+	return strings.Join(lines, "\n")
 }
 
-func renderTextLines(value, indent string) []string {
+func renderCodeBlock(value string) []string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
-		return nil
+		trimmed = "-"
 	}
 	parts := strings.Split(trimmed, "\n")
-	lines := make([]string, 0, len(parts))
-	for _, part := range parts {
-		part = strings.TrimRight(part, " \t")
-		if strings.TrimSpace(part) == "" {
-			lines = append(lines, indent)
-			continue
-		}
-		lines = append(lines, indent+part)
-	}
+	lines := make([]string, 0, len(parts)+2)
+	lines = append(lines, "```")
+	lines = append(lines, parts...)
+	lines = append(lines, "```")
 	return lines
-}
-
-func displayKey(key string) string {
-	parts := strings.Split(key, "_")
-	for i, part := range parts {
-		if part == "" {
-			continue
-		}
-		parts[i] = strings.ToUpper(part[:1]) + part[1:]
-	}
-	return strings.Join(parts, " ")
 }
 
 func shortValue(value string, max int) string {
@@ -250,15 +239,6 @@ func shortValue(value string, max int) string {
 		return value
 	}
 	return value[:max]
-}
-
-func firstAlertLabel(payload alertmanager.Webhook, key string) string {
-	for _, alert := range payload.Alerts {
-		if value := strings.TrimSpace(alert.Labels[key]); value != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func firstNonEmpty(values ...string) string {
