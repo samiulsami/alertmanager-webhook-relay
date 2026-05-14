@@ -9,8 +9,8 @@ import (
 )
 
 const (
-	defaultListenAddr    = ":8080"
-	defaultRequestTimout = 5 * time.Second
+	defaultListenAddr     = ":8080"
+	defaultRequestTimeout = 5 * time.Second
 )
 
 type Config struct {
@@ -24,7 +24,7 @@ func LoadFromEnv() (Config, error) {
 	cfg := Config{
 		ListenAddr:     defaultListenAddr,
 		GoogleChatURL:  strings.TrimSpace(os.Getenv("GOOGLE_CHAT_WEBHOOK_URL")),
-		RequestTimeout: defaultRequestTimout,
+		RequestTimeout: defaultRequestTimeout,
 		SendResolved:   true,
 	}
 	if raw := strings.TrimSpace(os.Getenv("LISTEN_ADDR")); raw != "" {

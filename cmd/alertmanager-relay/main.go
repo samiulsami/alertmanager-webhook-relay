@@ -21,7 +21,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	handler := server.New(cfg)
+	handler, err := server.New(cfg)
+	if err != nil {
+		slog.Error("invalid server configuration", "error", err)
+		os.Exit(1)
+	}
+
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           handler,

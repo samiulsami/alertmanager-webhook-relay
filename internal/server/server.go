@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -31,12 +32,12 @@ type metrics struct {
 	upstreamLatency prometheus.Histogram
 }
 
-func New(cfg config.Config) http.Handler {
+func New(cfg config.Config) (http.Handler, error) {
 	sender, err := googlechat.NewSender(cfg.GoogleChatURL, cfg.RequestTimeout)
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("create google chat sender: %w", err)
 	}
-	return newHandler(cfg, sender)
+	return newHandler(cfg, sender), nil
 }
 
 func newHandler(cfg config.Config, sender sender) http.Handler {
@@ -90,6 +91,12 @@ func (s *relayServer) handleGoogleChat(w http.ResponseWriter, r *http.Request) {
 		s.metrics.requests.WithLabelValues(endpoint, "invalid_payload").Inc()
 		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		slog.Warn("rejected invalid alertmanager payload", "error", err)
+		return
+	}
+
+	if !s.config.SendResolved && payload.CountByStatus("resolved") == len(payload.Alerts) {
+		s.metrics.requests.WithLabelValues(endpoint, "skipped_resolved").Inc()
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 

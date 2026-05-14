@@ -38,6 +38,11 @@ func NewSender(webhookURL string, timeout time.Duration) (*Sender, error) {
 	if parsed.Scheme == "" || parsed.Host == "" {
 		return nil, fmt.Errorf("google chat webhook url must be an absolute url")
 	}
+	switch parsed.Scheme {
+	case "http", "https":
+	default:
+		return nil, fmt.Errorf("google chat webhook url must use http or https")
+	}
 
 	return &Sender{
 		client:     &http.Client{Timeout: timeout},
@@ -46,12 +51,11 @@ func NewSender(webhookURL string, timeout time.Duration) (*Sender, error) {
 }
 
 func Render(payload alertmanager.Webhook, sendResolved bool) Message {
-	var lines []string
-	lines = append(lines, "*"+renderTitle(payload)+"*")
+	lines := []string{"*" + renderTitle(payload) + "*"}
 
 	bodyLines := renderAlertLines(payload, sendResolved)
 	if len(bodyLines) > 0 {
-		lines = append(lines, "")
+		lines = append(lines, "", "")
 		lines = append(lines, bodyLines...)
 	}
 
@@ -88,45 +92,32 @@ func (s *Sender) Send(ctx context.Context, message Message) (int, string, error)
 }
 
 func renderAlertLines(payload alertmanager.Webhook, sendResolved bool) []string {
-	alerts := orderedAlerts(payload.Alerts)
+	alerts := append([]alertmanager.Alert(nil), payload.Alerts...)
+	statusRank := func(status string) int {
+		switch strings.ToLower(strings.TrimSpace(status)) {
+		case "firing":
+			return 0
+		case "resolved":
+			return 1
+		default:
+			return 2
+		}
+	}
+	sort.SliceStable(alerts, func(i, j int) bool {
+		return statusRank(alerts[i].Status) < statusRank(alerts[j].Status)
+	})
+
 	lines := make([]string, 0, len(alerts))
-	printed := 0
 	for _, alert := range alerts {
 		if alert.Status == "resolved" && !sendResolved {
 			continue
 		}
-		if printed > 0 {
-			lines = append(lines, "")
-			lines = append(lines, alertSeparator)
-			lines = append(lines, "")
+		if len(lines) > 0 {
+			lines = append(lines, "", alertSeparator, "")
 		}
 		lines = append(lines, renderAlertBlock(alert)...)
-		printed++
 	}
 	return lines
-}
-
-func orderedAlerts(alerts []alertmanager.Alert) []alertmanager.Alert {
-	ordered := append([]alertmanager.Alert(nil), alerts...)
-	sort.SliceStable(ordered, func(i, j int) bool {
-		left := alertStatusOrder(ordered[i].Status)
-		right := alertStatusOrder(ordered[j].Status)
-		if left != right {
-			return left < right
-		}
-		return false
-	})
-	return ordered
-}
-
-func alertStatusOrder(status string) int {
-	if strings.EqualFold(status, "firing") {
-		return 0
-	}
-	if strings.EqualFold(status, "resolved") {
-		return 1
-	}
-	return 2
 }
 
 func renderAlertBlock(alert alertmanager.Alert) []string {
@@ -142,16 +133,13 @@ func renderAlertBlock(alert alertmanager.Alert) []string {
 	}
 
 	lines := renderCodeBlock(strings.Join(header, "\n"))
-
-	lines = append(lines, "")
-	lines = append(lines, "Labels:")
-	lines = append(lines, renderCodeBlock(renderLabels(alert.Labels))...)
-	lines = append(lines, "")
-	lines = append(lines, "Summary:")
-	lines = append(lines, renderCodeBlock(summary)...)
-	lines = append(lines, "")
-	lines = append(lines, "Description:")
-	lines = append(lines, renderCodeBlock(description)...)
+	appendSection := func(heading, value string) {
+		lines = append(lines, "", heading+":")
+		lines = append(lines, renderCodeBlock(value)...)
+	}
+	appendSection("Labels", renderLabels(alert.Labels))
+	appendSection("Summary", summary)
+	appendSection("Description", description)
 
 	return lines
 }
@@ -159,7 +147,11 @@ func renderAlertBlock(alert alertmanager.Alert) []string {
 func renderTitle(payload alertmanager.Webhook) string {
 	parts := make([]string, 0, 5)
 	if cluster := firstNonEmpty(payload.CommonLabels["cluster"], payload.GroupLabels["cluster"]); cluster != "" {
-		if clusterUID := shortValue(firstNonEmpty(payload.CommonLabels["cluster_uid"], payload.GroupLabels["cluster_uid"]), 8); clusterUID != "" {
+		clusterUID := firstNonEmpty(payload.CommonLabels["cluster_uid"], payload.GroupLabels["cluster_uid"])
+		if len(clusterUID) > 8 {
+			clusterUID = clusterUID[:8]
+		}
+		if clusterUID != "" {
 			parts = append(parts, fmt.Sprintf("[%s/%s]", cluster, clusterUID))
 		} else {
 			parts = append(parts, fmt.Sprintf("[%s]", cluster))
@@ -181,8 +173,13 @@ func renderTitle(payload alertmanager.Webhook) string {
 	if kind := firstNonEmpty(payload.GroupLabels["k8s_kind"], payload.CommonLabels["k8s_kind"]); kind != "" {
 		suffix += " - " + kind
 	}
-	if resource := renderResource(payload); resource != "" {
-		suffix += " - " + resource
+	resourceName := firstNonEmpty(payload.GroupLabels["k8s_resource"], payload.CommonLabels["k8s_resource"])
+	if resourceName != "" {
+		namespace := firstNonEmpty(payload.GroupLabels["namespace"], payload.CommonLabels["namespace"], payload.CommonLabels["app_namespace"])
+		if namespace != "" {
+			resourceName = namespace + "/" + resourceName
+		}
+		suffix += " - " + resourceName
 	}
 	if job := firstNonEmpty(payload.GroupLabels["job"], payload.CommonLabels["job"]); job != "" {
 		suffix += " [Via " + job + "]"
@@ -192,22 +189,7 @@ func renderTitle(payload alertmanager.Webhook) string {
 	return strings.Join(parts, " ")
 }
 
-func renderResource(payload alertmanager.Webhook) string {
-	resourceName := firstNonEmpty(payload.GroupLabels["k8s_resource"], payload.CommonLabels["k8s_resource"])
-	namespace := firstNonEmpty(payload.GroupLabels["namespace"], payload.CommonLabels["namespace"], payload.CommonLabels["app_namespace"])
-	if resourceName == "" {
-		return ""
-	}
-	if namespace != "" {
-		return namespace + "/" + resourceName
-	}
-	return resourceName
-}
-
 func renderLabels(labels map[string]string) string {
-	if len(labels) == 0 {
-		return ""
-	}
 	keys := make([]string, 0, len(labels))
 	for key := range labels {
 		keys = append(keys, key)
@@ -234,13 +216,6 @@ func renderCodeBlock(value string) []string {
 	return lines
 }
 
-func shortValue(value string, max int) string {
-	if len(value) <= max {
-		return value
-	}
-	return value[:max]
-}
-
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if trimmed := strings.TrimSpace(value); trimmed != "" {
@@ -251,12 +226,12 @@ func firstNonEmpty(values ...string) string {
 }
 
 func truncate(text string, limit int) string {
-	if len([]byte(text)) <= limit {
+	if len(text) <= limit {
 		return text
 	}
 	marker := "\n... truncated ..."
 	trimmed := text
-	for len([]byte(trimmed+marker)) > limit && trimmed != "" {
+	for len(trimmed)+len(marker) > limit && trimmed != "" {
 		_, size := utf8.DecodeLastRuneInString(trimmed)
 		trimmed = trimmed[:len(trimmed)-size]
 	}
