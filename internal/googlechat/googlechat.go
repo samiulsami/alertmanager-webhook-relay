@@ -117,6 +117,7 @@ func renderAlertLines(alerts amtemplate.Alerts, sendResolved bool) []string {
 func renderAlertBlock(alert amtemplate.Alert) []string {
 	summary := strings.TrimSpace(alert.Annotations["summary"])
 	description := strings.TrimSpace(alert.Annotations["description"])
+	runbook := strings.TrimSpace(alert.Annotations["runbook_url"])
 	status := strings.ToUpper(firstNonEmpty(alert.Status, "unknown"))
 	switch strings.ToLower(strings.TrimSpace(alert.Status)) {
 	case "firing":
@@ -126,21 +127,21 @@ func renderAlertBlock(alert amtemplate.Alert) []string {
 	}
 
 	header := []string{"Status: " + status}
-	if runbook := strings.TrimSpace(alert.Annotations["runbook_url"]); runbook != "" {
-		header = append(header, "Runbook: "+runbook)
-	}
 	if !alert.StartsAt.IsZero() {
 		header = append(header, "Started At: "+alert.StartsAt.Format(time.RFC3339))
 	}
 
 	lines := renderCodeBlock(strings.Join(header, "\n"))
+	if runbook != "" {
+		lines = append(lines, "", "Runbook: <"+runbook+"|"+runbook+">")
+	}
 	appendSection := func(heading, value string) {
 		lines = append(lines, "", heading+":")
 		lines = append(lines, renderCodeBlock(value)...)
 	}
-	appendSection("Labels", renderLabels(alert.Labels))
 	appendSection("Summary", summary)
 	appendSection("Description", description)
+	appendSection("Labels", renderLabels(alert.Labels))
 
 	return lines
 }

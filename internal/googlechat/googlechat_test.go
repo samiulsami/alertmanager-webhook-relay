@@ -86,6 +86,7 @@ func TestRenderUsesRequestedCodeBlockSections(t *testing.T) {
 			Annotations: amtemplate.KV{
 				"summary":     "Node disk usage is high",
 				"description": "Disk usage exceeded threshold for 15m",
+				"runbook_url": "https://runbooks.example.com/diskfull",
 			},
 		}},
 	})
@@ -98,8 +99,32 @@ func TestRenderUsesRequestedCodeBlockSections(t *testing.T) {
 	if !strings.Contains(message.Text, "Description:") {
 		t.Fatalf("expected description heading, got %q", message.Text)
 	}
+	if !strings.Contains(message.Text, "Runbook: <https://runbooks.example.com/diskfull|https://runbooks.example.com/diskfull>") {
+		t.Fatalf("expected clickable runbook link, got %q", message.Text)
+	}
+	if strings.Contains(message.Text, "```\nStatus: 🔥 FIRING\nRunbook:") {
+		t.Fatalf("expected runbook link outside the header code block, got %q", message.Text)
+	}
 	if !strings.Contains(message.Text, "Summary:") {
 		t.Fatalf("expected summary heading, got %q", message.Text)
+	}
+}
+
+func TestRenderPlacesLabelsAfterDescription(t *testing.T) {
+	payload := testWebhook(amtemplate.Data{
+		Status:      "firing",
+		GroupLabels: amtemplate.KV{"alertname": "DiskFull"},
+		Alerts: amtemplate.Alerts{{
+			Status:      "firing",
+			Labels:      amtemplate.KV{"alertname": "DiskFull"},
+			Annotations: amtemplate.KV{"summary": "Node disk usage is high", "description": "Disk usage exceeded threshold for 15m"},
+		}},
+	})
+
+	message := Render(payload, true)
+
+	if strings.Index(message.Text, "Description:") > strings.Index(message.Text, "Labels:") {
+		t.Fatalf("expected labels after description, got %q", message.Text)
 	}
 }
 
