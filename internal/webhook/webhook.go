@@ -1,4 +1,4 @@
-package googlechat
+package webhook
 
 import (
 	"bytes"
@@ -16,7 +16,6 @@ import (
 	amtemplate "github.com/prometheus/alertmanager/template"
 )
 
-// Enforced by google chat
 const maxMessageBytes = 32000
 
 const alertSeparator = "-----------------------------------------------------------------------------------------------"
@@ -28,37 +27,41 @@ type Message struct {
 type Sender struct {
 	client     *http.Client
 	webhookURL string
+	name       string
 }
 
 func NewSender(webhookURL string, timeout time.Duration) (*Sender, error) {
 	parsed, err := url.Parse(webhookURL)
 	if err != nil {
-		return nil, fmt.Errorf("parse google chat webhook url: %w", err)
+		return nil, fmt.Errorf("parse webhook url: %w", err)
 	}
 	if parsed.Scheme == "" || parsed.Host == "" {
-		return nil, fmt.Errorf("google chat webhook url must be an absolute url")
+		return nil, fmt.Errorf("webhook url must be an absolute url")
 	}
 	switch strings.ToLower(parsed.Scheme) {
 	case "http", "https":
 	default:
-		return nil, fmt.Errorf("google chat webhook url must use http or https")
+		return nil, fmt.Errorf("webhook url must use http or https")
 	}
 
 	return &Sender{
 		client:     &http.Client{Timeout: timeout},
 		webhookURL: webhookURL,
+		name:       parsed.Host,
 	}, nil
 }
 
+func (s *Sender) Name() string { return s.name }
+
+func (s *Sender) Key() string { return s.webhookURL }
+
 func Render(payload amwebhook.Message, sendResolved bool) Message {
 	lines := []string{"*" + renderTitle(payload) + "*"}
-
 	bodyLines := renderAlertLines(payload.Alerts, sendResolved)
 	if len(bodyLines) > 0 {
 		lines = append(lines, "", "")
 		lines = append(lines, bodyLines...)
 	}
-
 	text := strings.Join(lines, "\n")
 	return Message{Text: truncate(text, maxMessageBytes)}
 }
@@ -66,28 +69,22 @@ func Render(payload amwebhook.Message, sendResolved bool) Message {
 func (s *Sender) Send(ctx context.Context, message Message) (int, string, error) {
 	body, err := json.Marshal(message)
 	if err != nil {
-		return 0, "", fmt.Errorf("marshal google chat message: %w", err)
+		return 0, "", fmt.Errorf("marshal webhook message: %w", err)
 	}
-
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.webhookURL, bytes.NewReader(body))
 	if err != nil {
 		return 0, "", fmt.Errorf("build upstream request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return 0, "", fmt.Errorf("post to google chat: %w", err)
+		return 0, "", fmt.Errorf("post to webhook: %w", err)
 	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-
+	defer func() { _ = resp.Body.Close() }()
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 2048))
 	if err != nil {
 		return resp.StatusCode, "", fmt.Errorf("read upstream response: %w", err)
 	}
-
 	return resp.StatusCode, strings.TrimSpace(string(respBody)), nil
 }
 
@@ -103,7 +100,6 @@ func renderAlertLines(alerts amtemplate.Alerts, sendResolved bool) []string {
 			}
 		}
 	}
-
 	lines := make([]string, 0, len(ordered))
 	for _, alert := range ordered {
 		if len(lines) > 0 {
@@ -125,12 +121,10 @@ func renderAlertBlock(alert amtemplate.Alert) []string {
 	case "resolved":
 		status = "✅ " + status
 	}
-
 	header := []string{"Status: " + status}
 	if !alert.StartsAt.IsZero() {
 		header = append(header, "Started At: "+alert.StartsAt.Format(time.RFC3339))
 	}
-
 	lines := renderCodeBlock(strings.Join(header, "\n"))
 	if runbook != "" {
 		lines = append(lines, "", "Runbook: <"+runbook+"|"+runbook+">")
@@ -142,7 +136,6 @@ func renderAlertBlock(alert amtemplate.Alert) []string {
 	appendSection("Summary", summary)
 	appendSection("Description", description)
 	appendSection("Labels", renderLabels(alert.Labels))
-
 	return lines
 }
 
@@ -159,7 +152,6 @@ func renderTitle(payload amwebhook.Message) string {
 			parts = append(parts, fmt.Sprintf("[%s]", cluster))
 		}
 	}
-
 	counts := make([]string, 0, 2)
 	if firing := len(payload.Alerts.Firing()); firing > 0 {
 		counts = append(counts, fmt.Sprintf("FIRING:%d", firing))
@@ -170,7 +162,6 @@ func renderTitle(payload amwebhook.Message) string {
 	if len(counts) > 0 {
 		parts = append(parts, "["+strings.Join(counts, " | ")+"]")
 	}
-
 	suffix := alertName(payload)
 	if kind := firstNonEmpty(payload.GroupLabels["k8s_kind"], payload.CommonLabels["k8s_kind"]); kind != "" {
 		suffix += " - " + kind
@@ -187,7 +178,6 @@ func renderTitle(payload amwebhook.Message) string {
 		suffix += " [Via " + job + "]"
 	}
 	parts = append(parts, suffix)
-
 	return strings.Join(parts, " ")
 }
 

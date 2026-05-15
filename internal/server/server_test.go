@@ -10,25 +10,41 @@ import (
 	"time"
 
 	"go.openviz.dev/alertmanager-relay/internal/config"
-	"go.openviz.dev/alertmanager-relay/internal/googlechat"
+	"go.openviz.dev/alertmanager-relay/internal/webhook"
 )
 
 type fakeSender struct {
+	name       string
+	key        string
 	statusCode int
 	response   string
 	err        error
-	message    googlechat.Message
-	called     bool
+	message    webhook.Message
+	called     int
 }
 
-func (f *fakeSender) Send(_ context.Context, message googlechat.Message) (int, string, error) {
-	f.called = true
+func (f *fakeSender) Name() string {
+	if f.name == "" {
+		return "test-target"
+	}
+	return f.name
+}
+
+func (f *fakeSender) Key() string {
+	if f.key == "" {
+		return f.Name()
+	}
+	return f.key
+}
+
+func (f *fakeSender) Send(_ context.Context, message webhook.Message) (int, string, error) {
+	f.called++
 	f.message = message
 	return f.statusCode, f.response, f.err
 }
 
 func TestNewRejectsInvalidWebhookURL(t *testing.T) {
-	handler, err := New(config.Config{GoogleChatURL: "ftp://example.com/webhook", RequestTimeout: time.Second})
+	handler, err := New(config.Config{WebhookURLs: []string{"ftp://example.com/webhook"}, RequestTimeout: time.Second, DedupeCacheSize: 16})
 	if err == nil {
 		t.Fatal("expected invalid webhook url to return an error")
 	}
@@ -37,10 +53,10 @@ func TestNewRejectsInvalidWebhookURL(t *testing.T) {
 	}
 }
 
-func TestGoogleChatHandlerSuccess(t *testing.T) {
-	sender := &fakeSender{statusCode: http.StatusOK}
-	handler := newHandler(config.Config{SendResolved: true}, sender)
-	req := httptest.NewRequest(http.MethodPost, "/v1/ingest/google-chat", strings.NewReader(validPayload))
+func TestWebhookHandlerSuccess(t *testing.T) {
+	target := &fakeSender{statusCode: http.StatusOK}
+	handler := newHandler(config.Config{SendResolved: true, DedupeCacheSize: 16}, []sender{target})
+	req := httptest.NewRequest(http.MethodPost, "/v1/ingest/webhook", strings.NewReader(validPayload))
 	resp := httptest.NewRecorder()
 
 	handler.ServeHTTP(resp, req)
@@ -48,15 +64,15 @@ func TestGoogleChatHandlerSuccess(t *testing.T) {
 	if resp.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.Code)
 	}
-	if !strings.Contains(sender.message.Text, "HighLatency") {
-		t.Fatalf("expected alert content to be forwarded, got %q", sender.message.Text)
+	if !strings.Contains(target.message.Text, "HighLatency") {
+		t.Fatalf("expected alert content to be forwarded, got %q", target.message.Text)
 	}
 }
 
-func TestGoogleChatHandlerRejectsInvalidPayload(t *testing.T) {
-	sender := &fakeSender{}
-	handler := newHandler(config.Config{SendResolved: true}, sender)
-	req := httptest.NewRequest(http.MethodPost, "/v1/ingest/google-chat", strings.NewReader(`{"foo":"bar"}`))
+func TestWebhookHandlerRejectsInvalidPayload(t *testing.T) {
+	target := &fakeSender{}
+	handler := newHandler(config.Config{SendResolved: true, DedupeCacheSize: 16}, []sender{target})
+	req := httptest.NewRequest(http.MethodPost, "/v1/ingest/webhook", strings.NewReader(`{"foo":"bar"}`))
 	resp := httptest.NewRecorder()
 
 	handler.ServeHTTP(resp, req)
@@ -66,10 +82,10 @@ func TestGoogleChatHandlerRejectsInvalidPayload(t *testing.T) {
 	}
 }
 
-func TestGoogleChatHandlerPropagatesUpstreamFailure(t *testing.T) {
-	sender := &fakeSender{statusCode: http.StatusTooManyRequests, response: `rate limited`}
-	handler := newHandler(config.Config{SendResolved: true}, sender)
-	req := httptest.NewRequest(http.MethodPost, "/v1/ingest/google-chat", strings.NewReader(validPayload))
+func TestWebhookHandlerPropagatesUpstreamFailure(t *testing.T) {
+	target := &fakeSender{statusCode: http.StatusTooManyRequests, response: `rate limited`}
+	handler := newHandler(config.Config{SendResolved: true, DedupeCacheSize: 16}, []sender{target})
+	req := httptest.NewRequest(http.MethodPost, "/v1/ingest/webhook", strings.NewReader(validPayload))
 	resp := httptest.NewRecorder()
 
 	handler.ServeHTTP(resp, req)
@@ -79,10 +95,10 @@ func TestGoogleChatHandlerPropagatesUpstreamFailure(t *testing.T) {
 	}
 }
 
-func TestGoogleChatHandlerSkipsResolvedNotificationsWhenDisabled(t *testing.T) {
-	sender := &fakeSender{}
-	handler := newHandler(config.Config{SendResolved: false}, sender)
-	req := httptest.NewRequest(http.MethodPost, "/v1/ingest/google-chat", strings.NewReader(resolvedPayload))
+func TestWebhookHandlerSkipsResolvedNotificationsWhenDisabled(t *testing.T) {
+	target := &fakeSender{}
+	handler := newHandler(config.Config{SendResolved: false, DedupeCacheSize: 16}, []sender{target})
+	req := httptest.NewRequest(http.MethodPost, "/v1/ingest/webhook", strings.NewReader(resolvedPayload))
 	resp := httptest.NewRecorder()
 
 	handler.ServeHTTP(resp, req)
@@ -90,15 +106,15 @@ func TestGoogleChatHandlerSkipsResolvedNotificationsWhenDisabled(t *testing.T) {
 	if resp.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.Code)
 	}
-	if sender.called {
+	if target.called != 0 {
 		t.Fatal("expected resolved-only payload to be skipped")
 	}
 }
 
-func TestGoogleChatHandlerMapsTimeoutToBadGateway(t *testing.T) {
-	sender := &fakeSender{err: context.DeadlineExceeded}
-	handler := newHandler(config.Config{SendResolved: true}, sender)
-	req := httptest.NewRequest(http.MethodPost, "/v1/ingest/google-chat", strings.NewReader(validPayload))
+func TestWebhookHandlerMapsTimeoutToBadGateway(t *testing.T) {
+	target := &fakeSender{err: context.DeadlineExceeded}
+	handler := newHandler(config.Config{SendResolved: true, DedupeCacheSize: 16}, []sender{target})
+	req := httptest.NewRequest(http.MethodPost, "/v1/ingest/webhook", strings.NewReader(validPayload))
 	resp := httptest.NewRecorder()
 
 	handler.ServeHTTP(resp, req)
@@ -109,9 +125,9 @@ func TestGoogleChatHandlerMapsTimeoutToBadGateway(t *testing.T) {
 }
 
 func TestFakeSenderErrorClassificationDoesNotPanic(t *testing.T) {
-	sender := &fakeSender{err: errors.New("boom")}
-	handler := newHandler(config.Config{SendResolved: true}, sender)
-	req := httptest.NewRequest(http.MethodPost, "/v1/ingest/google-chat", strings.NewReader(validPayload))
+	target := &fakeSender{err: errors.New("boom")}
+	handler := newHandler(config.Config{SendResolved: true, DedupeCacheSize: 16}, []sender{target})
+	req := httptest.NewRequest(http.MethodPost, "/v1/ingest/webhook", strings.NewReader(validPayload))
 	resp := httptest.NewRecorder()
 
 	handler.ServeHTTP(resp, req)
@@ -121,11 +137,39 @@ func TestFakeSenderErrorClassificationDoesNotPanic(t *testing.T) {
 	}
 }
 
+func TestWebhookHandlerDedupesSuccessfulTargetOnRetry(t *testing.T) {
+	first := &fakeSender{name: "first", key: "https://example.com/first", statusCode: http.StatusOK}
+	second := &fakeSender{name: "second", key: "https://example.com/second", statusCode: http.StatusBadGateway, response: "boom"}
+	handler := newHandler(config.Config{SendResolved: true, DedupeCacheSize: 16}, []sender{first, second})
+
+	resp1 := httptest.NewRecorder()
+	handler.ServeHTTP(resp1, httptest.NewRequest(http.MethodPost, "/v1/ingest/webhook", strings.NewReader(validPayload)))
+	if resp1.Code != http.StatusBadGateway {
+		t.Fatalf("expected first attempt to fail, got %d", resp1.Code)
+	}
+	if first.called != 1 || second.called != 1 {
+		t.Fatalf("expected both targets attempted once, got first=%d second=%d", first.called, second.called)
+	}
+
+	second.statusCode = http.StatusOK
+	resp2 := httptest.NewRecorder()
+	handler.ServeHTTP(resp2, httptest.NewRequest(http.MethodPost, "/v1/ingest/webhook", strings.NewReader(validPayload)))
+	if resp2.Code != http.StatusOK {
+		t.Fatalf("expected retry to succeed, got %d", resp2.Code)
+	}
+	if first.called != 1 {
+		t.Fatalf("expected successful first target to be deduped, got %d calls", first.called)
+	}
+	if second.called != 2 {
+		t.Fatalf("expected failed target to retry, got %d calls", second.called)
+	}
+}
+
 var validPayload = `{
 	"version":"4",
 	"groupKey":"{}:{alertname=\"HighLatency\"}",
 	"status":"firing",
-	"receiver":"google-chat",
+	"receiver":"webhook",
 	"groupLabels":{"alertname":"HighLatency"},
 	"commonLabels":{"alertname":"HighLatency","namespace":"prod","severity":"critical"},
 	"commonAnnotations":{"summary":"API latency is above threshold"},
@@ -147,7 +191,7 @@ var resolvedPayload = `{
 	"version":"4",
 	"groupKey":"{}:{alertname=\"HighLatency\"}",
 	"status":"resolved",
-	"receiver":"google-chat",
+	"receiver":"webhook",
 	"groupLabels":{"alertname":"HighLatency"},
 	"commonLabels":{"alertname":"HighLatency","namespace":"prod","severity":"critical"},
 	"commonAnnotations":{"summary":"API latency is back to normal"},

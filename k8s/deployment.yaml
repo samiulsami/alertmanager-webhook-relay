@@ -26,11 +26,13 @@ spec:
           value: "${REQUEST_TIMEOUT}"
         - name: SEND_RESOLVED
           value: "${SEND_RESOLVED}"
-        - name: GOOGLE_CHAT_WEBHOOK_URL
+        - name: WEBHOOK_URLS
           valueFrom:
             secretKeyRef:
-              name: ${GOOGLE_CHAT_WEBHOOK_SECRET_NAME}
+              name: ${WEBHOOK_URLS_SECRET_NAME}
               key: url
+        - name: DEDUPE_CACHE_SIZE
+          value: "10000"
         livenessProbe:
           httpGet:
             path: /healthz

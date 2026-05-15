@@ -17,11 +17,11 @@ SRC_DIRS            := cmd internal
 BUILD_DIRS          := .go/bin/$(OS)_$(ARCH) .go/cache
 DOCKER_REPO_ROOT    := /go/src/$(GO_PKG)/$(REPO)
 
-K8S_NAMESPACE                  ?= monitoring
-GOOGLE_CHAT_WEBHOOK_SECRET_NAME ?= alertmanager-relay-google-chat
-LISTEN_ADDR                    ?= :8080
-REQUEST_TIMEOUT                ?= 5s
-SEND_RESOLVED                  ?= true
+K8S_NAMESPACE            ?= monitoring
+WEBHOOK_URLS_SECRET_NAME ?= alertmanager-relay-webhook-urls
+LISTEN_ADDR              ?= :8080
+REQUEST_TIMEOUT          ?= 5s
+SEND_RESOLVED            ?= true
 
 .PHONY: help
 help:
@@ -88,10 +88,10 @@ clean:
 .PHONY: deploy
 deploy: clean push
 	kubectl create namespace $(K8S_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
-ifneq ($(strip $(GOOGLE_CHAT_WEBHOOK_URL)),)
-	kubectl create secret generic $(GOOGLE_CHAT_WEBHOOK_SECRET_NAME) \
+ifneq ($(strip $(WEBHOOK_URLS)),)
+	kubectl create secret generic $(WEBHOOK_URLS_SECRET_NAME) \
 		--namespace $(K8S_NAMESPACE) \
-		--from-literal=url='$(GOOGLE_CHAT_WEBHOOK_URL)' \
+		--from-literal=url='$(WEBHOOK_URLS)' \
 		--dry-run=client -o yaml | kubectl apply -f -
 endif
 	@echo "Deploying $(FULL_IMAGE_NAME) to namespace $(K8S_NAMESPACE)..."
@@ -101,7 +101,7 @@ endif
 		-e "s|\$${LISTEN_ADDR}|$(LISTEN_ADDR)|g" \
 		-e "s|\$${REQUEST_TIMEOUT}|$(REQUEST_TIMEOUT)|g" \
 		-e "s|\$${SEND_RESOLVED}|$(SEND_RESOLVED)|g" \
-		-e "s|\$${GOOGLE_CHAT_WEBHOOK_SECRET_NAME}|$(GOOGLE_CHAT_WEBHOOK_SECRET_NAME)|g" \
+		-e "s|\$${WEBHOOK_URLS_SECRET_NAME}|$(WEBHOOK_URLS_SECRET_NAME)|g" \
 		k8s/deployment.yaml | kubectl apply -n $(K8S_NAMESPACE) -f -
 	kubectl apply -n $(K8S_NAMESPACE) -f k8s/service.yaml
 

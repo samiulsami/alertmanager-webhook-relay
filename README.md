@@ -1,29 +1,30 @@
 # alertmanager-relay
 
-Receives Alertmanager webhooks, translates them into the format required by unsupported endpoints, and forwards them to the configured URL.
-
-***Note: Currently only supports Google Chat.***
+Receives Alertmanager webhooks, renders them into a simple `{"text":"..."}` payload, and fans them out to one or more configured downstream URLs.
 
 ## Endpoints
 
 ```text
-Alertmanager -> alertmanager-relay -> <unsupported endpoint>
+Alertmanager -> alertmanager-relay -> <webhook endpoint(s)>
 ```
 
-- `POST /v1/ingest/google-chat`
+- `POST /v1/ingest/webhook`
 - `GET /healthz`
 - `GET /metrics`
 
-It only returns `2xx` after the downstream endpoint returns `2xx`.
+It only returns `2xx` after every downstream webhook returns `2xx` or the target was already successfully delivered for the same payload.
 
 ## Why
 
-Google Chat expects a different request format than Alertmanager's generic webhook sends.
+Alertmanager's generic webhook sends an Alertmanager-specific JSON envelope. Several chat webhook products accept a much simpler JSON body with a top-level `text` field instead.
 
 Docs:
 
+- Slack incoming webhooks: <https://docs.slack.dev/messaging/sending-messages-using-incoming-webhooks>
 - Google Chat incoming webhooks: <https://developers.google.com/workspace/chat/quickstart/webhooks>
-- Google Chat `Message` schema: <https://developers.google.com/workspace/chat/api/reference/rest/v1/spaces.messages>
+- Mattermost incoming webhooks: <https://developers.mattermost.com/integrate/webhooks/incoming/>
+- Rocket.Chat incoming integrations: <https://docs.rocket.chat/docs/integrations>
+- Webex incoming webhooks: <https://apphub.webex.com/applications/incoming-webhooks-cisco-systems-38054-23307-75252>
 - Alertmanager webhook receiver config: <https://prometheus.io/docs/alerting/latest/configuration/#webhook_config>
 - Alertmanager notification data / webhook payload fields: <https://prometheus.io/docs/alerting/latest/notifications/>
 
@@ -38,7 +39,9 @@ After that, the payload should be rendered directly in Alertmanager and this rep
 Included:
 
 - standard Alertmanager webhook input
-- plain text Google Chat output
+- plain text `{"text":"..."}` output
+- multiple downstream webhook URLs
+- per-target deduplication for partially successful fanout retries
 - no success response before downstream success
 
 Not included:
@@ -52,31 +55,47 @@ Not included:
 
 Required:
 
-- `GOOGLE_CHAT_WEBHOOK_URL`
+- `WEBHOOK_URLS`
 
 Optional:
 
 - `LISTEN_ADDR` default `:8080`
 - `REQUEST_TIMEOUT` default `5s`
 - `SEND_RESOLVED` default `true`
+- `DEDUPE_CACHE_SIZE` default `10000`
+
+`WEBHOOK_URLS` accepts one or more absolute URLs separated by commas or newlines.
+
+- `WEBHOOK_URL` still works for a single URL
 
 Default namespace for deployment: `monitoring`
 
 ## Alertmanager Webhook Configuration
 
-Alertmanager should send to the relay service, not to the Google Chat webhook URL.
+Alertmanager should send to the relay service, not to the downstream webhook URL.
 
 Default in-cluster URL:
 
 ```text
-http://alertmanager-relay.monitoring.svc.cluster.local:8080/v1/ingest/google-chat
+http://alertmanager-relay.monitoring.svc.cluster.local:8080/v1/ingest/webhook
 ```
 
 Same-namespace short form:
 
 ```text
-http://alertmanager-relay:8080/v1/ingest/google-chat
+http://alertmanager-relay:8080/v1/ingest/webhook
 ```
+
+## Delivery Semantics
+
+For each incoming Alertmanager payload, the relay:
+
+- renders one plain text message body
+- attempts delivery to every configured downstream URL
+- remembers successful deliveries per downstream URL using a SHA-512 hash of the original Alertmanager payload
+- returns `502` if any downstream target fails
+
+This means a later retry from Alertmanager only re-sends to the targets that did not previously succeed.
 
 ## Commands
 
@@ -89,10 +108,10 @@ REGISTRY=sami7786 make push
 REGISTRY=sami7786 make deploy
 ```
 
-`deploy` uses the existing secret `alertmanager-relay-google-chat` in `$(K8S_NAMESPACE)`.
+`deploy` uses the secret `alertmanager-relay-webhook-urls` in `$(K8S_NAMESPACE)`.
 
 To create or update that secret during deploy:
 
 ```bash
-REGISTRY=sami7786 GOOGLE_CHAT_WEBHOOK_URL="https://chat.googleapis.com/..." make deploy
+REGISTRY=sami7786 WEBHOOK_URLS="https://chat.googleapis.com/...,https://hooks.slack.com/services/..." make deploy
 ```
