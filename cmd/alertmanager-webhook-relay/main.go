@@ -45,7 +45,7 @@ func main() {
 		}
 	}()
 
-	slog.Info("starting alertmanager relay", "addr", cfg.ListenAddr, "webhook_urls", len(cfg.WebhookURLs), "request_timeout", cfg.RequestTimeout, "send_resolved", cfg.SendResolved, "dedupe_cache_size", cfg.DedupeCacheSize)
+	slog.Info("starting alertmanager relay", "addr", cfg.ListenAddr, "webhook_urls", len(cfg.WebhookURLs), "request_timeout", cfg.RequestTimeout, "send_resolved", cfg.SendResolved, "dedupe_cache_size", cfg.DedupeCacheSize, "max_request_body_bytes", cfg.MaxRequestBodyBytes)
 	err = httpServer.ListenAndServe()
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("server exited", "error", err)
