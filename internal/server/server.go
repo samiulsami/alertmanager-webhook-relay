@@ -16,9 +16,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"go.openviz.dev/alertmanager-relay/internal/alertmanager"
-	"go.openviz.dev/alertmanager-relay/internal/config"
-	"go.openviz.dev/alertmanager-relay/internal/webhook"
+	"go.openviz.dev/alertmanager-webhook-relay/internal/alertmanager"
+	"go.openviz.dev/alertmanager-webhook-relay/internal/config"
+	"go.openviz.dev/alertmanager-webhook-relay/internal/webhook"
 )
 
 type relayServer struct {

@@ -1,19 +1,19 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: alertmanager-relay
+  name: alertmanager-webhook-relay
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: alertmanager-relay
+      app.kubernetes.io/name: alertmanager-webhook-relay
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: alertmanager-relay
+        app.kubernetes.io/name: alertmanager-webhook-relay
     spec:
       containers:
-      - name: alertmanager-relay
+      - name: alertmanager-webhook-relay
         image: ${DOCKER_REGISTRY}/${IMAGE_NAME}:${VERSION}
         imagePullPolicy: Always
         ports:
@@ -27,14 +27,14 @@ spec:
         - name: SEND_RESOLVED
           value: "${SEND_RESOLVED}"
         - name: WEBHOOK_URLS_FILE
-          value: /etc/alertmanager-relay/webhooks/urls
+          value: /etc/alertmanager-webhook-relay/webhooks/urls
         - name: DEDUPE_CACHE_SIZE
           value: "10000"
         - name: MAX_REQUEST_BODY_BYTES
           value: "1048576"
         volumeMounts:
         - name: webhook-urls
-          mountPath: /etc/alertmanager-relay/webhooks
+          mountPath: /etc/alertmanager-webhook-relay/webhooks
           readOnly: true
         livenessProbe:
           httpGet:

@@ -5,7 +5,7 @@ Receives Alertmanager webhooks, renders them into a simple `{"text":"..."}` payl
 ## Endpoints
 
 ```text
-Alertmanager -> alertmanager-relay -> <webhook endpoint(s)>
+Alertmanager -> alertmanager-webhook-relay -> <webhook endpoint(s)>
 ```
 
 - `POST /v1/ingest/webhook`
@@ -81,13 +81,13 @@ Alertmanager should send to the relay service, not to the downstream webhook URL
 Default in-cluster URL:
 
 ```text
-http://alertmanager-relay.monitoring.svc.cluster.local:8080/v1/ingest/webhook
+http://alertmanager-webhook-relay.monitoring.svc.cluster.local:8080/v1/ingest/webhook
 ```
 
 Same-namespace short form:
 
 ```text
-http://alertmanager-relay:8080/v1/ingest/webhook
+http://alertmanager-webhook-relay:8080/v1/ingest/webhook
 ```
 
 ## Delivery Semantics
@@ -112,7 +112,7 @@ REGISTRY=sami7786 make push
 REGISTRY=sami7786 make deploy
 ```
 
-`deploy` uses the secret `alertmanager-relay-webhook-urls` in `$(K8S_NAMESPACE)`.
+`deploy` uses the secret `alertmanager-webhook-relay-webhook-urls` in `$(K8S_NAMESPACE)`.
 
 To create or update that secret during deploy:
 
@@ -120,4 +120,4 @@ To create or update that secret during deploy:
 REGISTRY=sami7786 WEBHOOK_URLS="https://chat.googleapis.com/...,https://hooks.slack.com/services/..." make deploy
 ```
 
-The default deployment mounts that secret and reads `/etc/alertmanager-relay/webhooks/urls`.
+The default deployment mounts that secret and reads `/etc/alertmanager-webhook-relay/webhooks/urls`.

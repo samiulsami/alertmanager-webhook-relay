@@ -2,7 +2,7 @@ SHELL=/bin/bash -o pipefail
 
 GO_PKG              := go.openviz.dev
 REPO                := $(notdir $(shell pwd))
-BIN                 := alertmanager-relay
+BIN                 := alertmanager-webhook-relay
 IMAGE_NAME          ?= $(BIN)
 DOCKER_REGISTRY     ?= $(REGISTRY)
 VERSION             ?= latest
@@ -18,7 +18,7 @@ BUILD_DIRS          := .go/bin/$(OS)_$(ARCH) .go/cache
 DOCKER_REPO_ROOT    := /go/src/$(GO_PKG)/$(REPO)
 
 K8S_NAMESPACE            ?= monitoring
-WEBHOOK_URLS_SECRET_NAME ?= alertmanager-relay-webhook-urls
+WEBHOOK_URLS_SECRET_NAME ?= alertmanager-webhook-relay-webhook-urls
 LISTEN_ADDR              ?= :8080
 REQUEST_TIMEOUT          ?= 5s
 SEND_RESOLVED            ?= true
@@ -37,7 +37,7 @@ help:
 
 .PHONY: build
 build:
-	go build ./cmd/alertmanager-relay
+	go build ./cmd/alertmanager-webhook-relay
 
 .PHONY: test
 test:

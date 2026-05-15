@@ -1,4 +1,4 @@
-module go.openviz.dev/alertmanager-relay
+module go.openviz.dev/alertmanager-webhook-relay
 
 go 1.26.0
 
