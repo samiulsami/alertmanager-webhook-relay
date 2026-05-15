@@ -1,4 +1,4 @@
-FROM golang:1.25 AS builder
+FROM golang:1.26 AS builder
 
 WORKDIR /src
 
@@ -10,7 +10,7 @@ COPY internal ./internal
 
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o /out/alertmanager-relay ./cmd/alertmanager-relay
 
-FROM alpine:3.22
+FROM alpine:3.22.4
 
 RUN adduser -D -H -u 10001 app
 

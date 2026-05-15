@@ -8,7 +8,7 @@ DOCKER_REGISTRY     ?= $(REGISTRY)
 VERSION             ?= latest
 FULL_IMAGE_NAME     := $(DOCKER_REGISTRY)/$(IMAGE_NAME):$(VERSION)
 
-GO_VERSION          ?= 1.25
+GO_VERSION          ?= 1.26
 BUILD_IMAGE         ?= ghcr.io/appscode/golang-dev:$(GO_VERSION)
 
 OS                  := $(if $(GOOS),$(GOOS),$(shell go env GOOS))
