@@ -26,13 +26,16 @@ spec:
           value: "${REQUEST_TIMEOUT}"
         - name: SEND_RESOLVED
           value: "${SEND_RESOLVED}"
-        - name: WEBHOOK_URLS
-          valueFrom:
-            secretKeyRef:
-              name: ${WEBHOOK_URLS_SECRET_NAME}
-              key: url
+        - name: WEBHOOK_URLS_FILE
+          value: /etc/alertmanager-relay/webhooks/urls
         - name: DEDUPE_CACHE_SIZE
           value: "10000"
+        - name: MAX_REQUEST_BODY_BYTES
+          value: "1048576"
+        volumeMounts:
+        - name: webhook-urls
+          mountPath: /etc/alertmanager-relay/webhooks
+          readOnly: true
         livenessProbe:
           httpGet:
             path: /healthz
@@ -43,3 +46,10 @@ spec:
             memory: 32Mi
           limits:
             memory: 128Mi
+      volumes:
+      - name: webhook-urls
+        secret:
+          secretName: ${WEBHOOK_URLS_SECRET_NAME}
+          items:
+          - key: urls
+            path: urls

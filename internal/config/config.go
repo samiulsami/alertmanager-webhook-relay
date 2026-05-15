@@ -8,7 +8,10 @@ import (
 	"time"
 )
 
-const DefaultDedupeCacheSize = 10000
+const (
+	DefaultDedupeCacheSize           = 10000
+	DefaultMaxRequestBodyBytes int64 = 1 << 20
+)
 
 const (
 	defaultListenAddr     = ":8080"
@@ -16,20 +19,26 @@ const (
 )
 
 type Config struct {
-	ListenAddr      string
-	WebhookURLs     []string
-	RequestTimeout  time.Duration
-	SendResolved    bool
-	DedupeCacheSize int
+	ListenAddr          string
+	WebhookURLs         []string
+	RequestTimeout      time.Duration
+	SendResolved        bool
+	DedupeCacheSize     int
+	MaxRequestBodyBytes int64
 }
 
 func LoadFromEnv() (Config, error) {
+	webhookURLs, err := parseWebhookURLs()
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
-		ListenAddr:      defaultListenAddr,
-		WebhookURLs:     parseWebhookURLs(),
-		RequestTimeout:  defaultRequestTimeout,
-		SendResolved:    true,
-		DedupeCacheSize: DefaultDedupeCacheSize,
+		ListenAddr:          defaultListenAddr,
+		WebhookURLs:         webhookURLs,
+		RequestTimeout:      defaultRequestTimeout,
+		SendResolved:        true,
+		DedupeCacheSize:     DefaultDedupeCacheSize,
+		MaxRequestBodyBytes: DefaultMaxRequestBodyBytes,
 	}
 	if raw := strings.TrimSpace(os.Getenv("LISTEN_ADDR")); raw != "" {
 		cfg.ListenAddr = raw
@@ -69,11 +78,29 @@ func LoadFromEnv() (Config, error) {
 		cfg.DedupeCacheSize = size
 	}
 
+	if raw := strings.TrimSpace(os.Getenv("MAX_REQUEST_BODY_BYTES")); raw != "" {
+		size, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid MAX_REQUEST_BODY_BYTES: %w", err)
+		}
+		if size <= 0 {
+			return Config{}, fmt.Errorf("MAX_REQUEST_BODY_BYTES must be positive")
+		}
+		cfg.MaxRequestBodyBytes = size
+	}
+
 	return cfg, nil
 }
 
-func parseWebhookURLs() []string {
+func parseWebhookURLs() ([]string, error) {
 	rawValues := []string{os.Getenv("WEBHOOK_URLS"), os.Getenv("WEBHOOK_URL")}
+	if filePath := strings.TrimSpace(os.Getenv("WEBHOOK_URLS_FILE")); filePath != "" {
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			return nil, fmt.Errorf("read WEBHOOK_URLS_FILE: %w", err)
+		}
+		rawValues = append([]string{string(data)}, rawValues...)
+	}
 
 	seen := map[string]struct{}{}
 	urls := make([]string, 0)
@@ -92,5 +119,5 @@ func parseWebhookURLs() []string {
 			urls = append(urls, url)
 		}
 	}
-	return urls
+	return urls, nil
 }

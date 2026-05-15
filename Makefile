@@ -91,7 +91,7 @@ deploy: clean push
 ifneq ($(strip $(WEBHOOK_URLS)),)
 	kubectl create secret generic $(WEBHOOK_URLS_SECRET_NAME) \
 		--namespace $(K8S_NAMESPACE) \
-		--from-literal=url='$(WEBHOOK_URLS)' \
+		--from-literal=urls='$(WEBHOOK_URLS)' \
 		--dry-run=client -o yaml | kubectl apply -f -
 endif
 	@echo "Deploying $(FULL_IMAGE_NAME) to namespace $(K8S_NAMESPACE)..."

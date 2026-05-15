@@ -1,4 +1,4 @@
-# alertmanager-relay
+# alertmanager-webhook-relay
 
 Receives Alertmanager webhooks, renders them into a simple `{"text":"..."}` payload, and fans them out to one or more configured downstream URLs.
 
@@ -63,8 +63,12 @@ Optional:
 - `REQUEST_TIMEOUT` default `5s`
 - `SEND_RESOLVED` default `true`
 - `DEDUPE_CACHE_SIZE` default `10000`
+- `MAX_REQUEST_BODY_BYTES` default `1048576` (1 MiB)
+- `WEBHOOK_URLS_FILE` path to a mounted file containing URLs
 
 `WEBHOOK_URLS` accepts one or more absolute URLs separated by commas or newlines.
+
+`WEBHOOK_URLS_FILE` should contain one or more URLs separated by commas or newlines.
 
 - `WEBHOOK_URL` still works for a single URL
 
@@ -115,3 +119,5 @@ To create or update that secret during deploy:
 ```bash
 REGISTRY=sami7786 WEBHOOK_URLS="https://chat.googleapis.com/...,https://hooks.slack.com/services/..." make deploy
 ```
+
+The default deployment mounts that secret and reads `/etc/alertmanager-relay/webhooks/urls`.

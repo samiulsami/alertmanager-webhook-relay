@@ -35,8 +35,19 @@ type sender interface {
 }
 
 type metrics struct {
-	requests        *prometheus.CounterVec
-	upstreamLatency *prometheus.HistogramVec
+	requests          *prometheus.CounterVec
+	downstreamResults *prometheus.CounterVec
+	upstreamLatency   *prometheus.HistogramVec
+}
+
+type deliveryResult struct {
+	target       string
+	statusCode   int
+	responseBody string
+	duration     time.Duration
+	err          error
+	deduped      bool
+	succeeded    bool
 }
 
 var (
@@ -44,8 +55,12 @@ var (
 	relayMetrics        = &metrics{
 		requests: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "alertmanager_relay_requests_total",
-			Help: "Total relay requests by endpoint outcome.",
+			Help: "Total inbound relay requests by endpoint outcome.",
 		}, []string{"endpoint", "result"}),
+		downstreamResults: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "alertmanager_relay_downstream_results_total",
+			Help: "Total downstream delivery results by endpoint, target, and result.",
+		}, []string{"endpoint", "target", "result"}),
 		upstreamLatency: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "alertmanager_relay_upstream_request_duration_seconds",
 			Help:    "Latency of upstream webhook requests.",
@@ -72,8 +87,12 @@ func New(cfg config.Config) (http.Handler, error) {
 }
 
 func newHandler(cfg config.Config, senders []sender) http.Handler {
+	if cfg.MaxRequestBodyBytes <= 0 {
+		cfg.MaxRequestBodyBytes = config.DefaultMaxRequestBodyBytes
+	}
+
 	registerMetricsOnce.Do(func() {
-		prometheus.MustRegister(relayMetrics.requests, relayMetrics.upstreamLatency)
+		prometheus.MustRegister(relayMetrics.requests, relayMetrics.downstreamResults, relayMetrics.upstreamLatency)
 	})
 
 	server := &relayServer{
@@ -101,8 +120,22 @@ func (s *relayServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, s.config.MaxRequestBodyBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		result := "invalid_body"
+		statusCode := http.StatusBadRequest
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			result = "request_too_large"
+			statusCode = http.StatusRequestEntityTooLarge
+		}
+		s.metrics.requests.WithLabelValues(endpoint, result).Inc()
+		http.Error(w, http.StatusText(statusCode), statusCode)
+		slog.Warn("rejected webhook relay request", "endpoint", endpoint, "result", result, "max_body_bytes", s.config.MaxRequestBodyBytes, "error", err)
+		return
+	}
+	if err := r.Body.Close(); err != nil {
 		s.metrics.requests.WithLabelValues(endpoint, "invalid_body").Inc()
 		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		slog.Warn("rejected webhook relay request", "endpoint", endpoint, "result", "invalid_body", "error", err)
@@ -136,17 +169,6 @@ func (s *relayServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	message := webhook.Render(payload, s.config.SendResolved)
 
-	type deliveryResult struct {
-		target       string
-		result       string
-		statusCode   int
-		responseBody string
-		duration     time.Duration
-		err          error
-		deduped      bool
-		succeeded    bool
-	}
-
 	results := make([]deliveryResult, len(s.senders))
 	var wg sync.WaitGroup
 	for i, target := range s.senders {
@@ -156,7 +178,7 @@ func (s *relayServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 			dedupeKey := target.Key() + ":" + payloadHash
 			if _, ok := s.dedupe.Get(dedupeKey); ok {
-				results[i] = deliveryResult{target: target.Name(), result: "deduped", deduped: true, succeeded: true}
+				results[i] = deliveryResult{target: target.Name(), deduped: true, succeeded: true}
 				return
 			}
 
@@ -171,24 +193,15 @@ func (s *relayServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 				err:          err,
 			}
 			if err != nil {
-				result.result = "upstream_error"
-				if errors.Is(err, context.DeadlineExceeded) || errors.Is(r.Context().Err(), context.DeadlineExceeded) {
-					result.result = "upstream_timeout"
-				}
 				results[i] = result
 				return
 			}
-			if statusCode < 200 || statusCode >= 300 {
-				result.result = "upstream_non_2xx"
-				if statusCode == http.StatusTooManyRequests {
-					result.result = "upstream_rate_limited"
-				}
+			if result.statusCode < 200 || result.statusCode >= 300 {
 				results[i] = result
 				return
 			}
 
 			s.dedupe.Add(dedupeKey, struct{}{})
-			result.result = "success"
 			result.succeeded = true
 			results[i] = result
 		}(i, target)
@@ -200,28 +213,31 @@ func (s *relayServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	skipped := 0
 	for _, result := range results {
 		targetFields := append(logFields, "target", result.target)
-		s.metrics.upstreamLatency.WithLabelValues(result.target).Observe(result.duration.Seconds())
+		outcome := result.metricResult(r.Context())
 		if result.deduped {
 			skipped++
-			slog.Info("skipped duplicate webhook delivery", append(targetFields, "result", result.result)...)
+			s.metrics.downstreamResults.WithLabelValues(endpoint, result.target, outcome).Inc()
+			slog.Info("skipped duplicate webhook delivery", append(targetFields, "result", outcome)...)
 			continue
 		}
+		s.metrics.downstreamResults.WithLabelValues(endpoint, result.target, outcome).Inc()
+		s.metrics.upstreamLatency.WithLabelValues(result.target).Observe(result.duration.Seconds())
 		if result.succeeded {
 			delivered++
-			slog.Info("forwarded alertmanager notification to webhook", append(targetFields, "result", result.result, "status_code", result.statusCode, "duration_ms", result.duration.Milliseconds())...)
+			slog.Info("forwarded alertmanager notification to webhook", append(targetFields, "result", outcome, "status_code", result.statusCode, "duration_ms", result.duration.Milliseconds())...)
 			continue
 		}
 
 		allSucceeded = false
-		s.metrics.requests.WithLabelValues(endpoint, result.result).Inc()
 		if result.err != nil {
-			slog.Error("webhook delivery failed", append(targetFields, "result", result.result, "status_code", result.statusCode, "response_body", result.responseBody, "duration_ms", result.duration.Milliseconds(), "error", result.err)...)
+			slog.Error("webhook delivery failed", append(targetFields, "result", outcome, "status_code", result.statusCode, "response_body", result.responseBody, "duration_ms", result.duration.Milliseconds(), "error", result.err)...)
 			continue
 		}
-		slog.Error("webhook rejected message", append(targetFields, "result", result.result, "status_code", result.statusCode, "response_body", result.responseBody, "duration_ms", result.duration.Milliseconds())...)
+		slog.Error("webhook rejected message", append(targetFields, "result", outcome, "status_code", result.statusCode, "response_body", result.responseBody, "duration_ms", result.duration.Milliseconds())...)
 	}
 
 	if !allSucceeded {
+		s.metrics.requests.WithLabelValues(endpoint, "downstream_failed").Inc()
 		http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
 		return
 	}
@@ -234,6 +250,22 @@ func (s *relayServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 func hashPayload(body []byte) string {
 	sum := sha512.Sum512(body)
 	return hex.EncodeToString(sum[:])
+}
+
+func (r deliveryResult) metricResult(requestCtx context.Context) string {
+	if r.deduped {
+		return "deduped"
+	}
+	if r.succeeded {
+		return "success"
+	}
+	if r.err != nil {
+		if errors.Is(r.err, context.DeadlineExceeded) || errors.Is(requestCtx.Err(), context.DeadlineExceeded) {
+			return "upstream_timeout"
+		}
+		return "upstream_error"
+	}
+	return fmt.Sprintf("upstream_http_%d", r.statusCode)
 }
 
 func mustNewDedupe(size int) *lru.Cache[string, struct{}] {

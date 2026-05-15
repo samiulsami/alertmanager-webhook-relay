@@ -12,9 +12,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o
 
 FROM alpine:3.22.4
 
-RUN adduser -D -H -u 10001 app
-
-USER 10001
+USER 10001:10001
 
 COPY --from=builder /out/alertmanager-relay /usr/local/bin/alertmanager-relay
 

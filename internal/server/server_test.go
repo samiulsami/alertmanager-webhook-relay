@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -79,6 +80,39 @@ func TestWebhookHandlerRejectsInvalidPayload(t *testing.T) {
 
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", resp.Code)
+	}
+}
+
+func TestWebhookHandlerRejectsOversizedBody(t *testing.T) {
+	target := &fakeSender{}
+	handler := newHandler(config.Config{SendResolved: true, DedupeCacheSize: 16, MaxRequestBodyBytes: 32}, []sender{target})
+	req := httptest.NewRequest(http.MethodPost, "/v1/ingest/webhook", strings.NewReader(validPayload))
+	resp := httptest.NewRecorder()
+
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d", resp.Code)
+	}
+	if target.called != 0 {
+		t.Fatal("expected oversized payload to be rejected before delivery")
+	}
+}
+
+func TestWebhookHandlerUsesDefaultBodyLimit(t *testing.T) {
+	target := &fakeSender{}
+	handler := newHandler(config.Config{SendResolved: true, DedupeCacheSize: 16}, []sender{target})
+	body := strings.Repeat("x", int(config.DefaultMaxRequestBodyBytes)+1)
+	req := httptest.NewRequest(http.MethodPost, "/v1/ingest/webhook", strings.NewReader(body))
+	resp := httptest.NewRecorder()
+
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 from default limit, got %d", resp.Code)
+	}
+	if target.called != 0 {
+		t.Fatal("expected oversized payload to be rejected before delivery")
 	}
 }
 
@@ -162,6 +196,32 @@ func TestWebhookHandlerDedupesSuccessfulTargetOnRetry(t *testing.T) {
 	}
 	if second.called != 2 {
 		t.Fatalf("expected failed target to retry, got %d calls", second.called)
+	}
+}
+
+func TestWebhookHandlerAcceptsBodyAtConfiguredLimit(t *testing.T) {
+	target := &fakeSender{statusCode: http.StatusOK}
+	body := fmt.Sprintf("{" +
+		"\"version\":\"4\"," +
+		"\"groupKey\":\"g\"," +
+		"\"status\":\"firing\"," +
+		"\"receiver\":\"webhook\"," +
+		"\"alerts\":[{" +
+		"\"status\":\"firing\"," +
+		"\"labels\":{}," +
+		"\"annotations\":{}" +
+		"}]}")
+	handler := newHandler(config.Config{SendResolved: true, DedupeCacheSize: 16, MaxRequestBodyBytes: int64(len(body))}, []sender{target})
+	req := httptest.NewRequest(http.MethodPost, "/v1/ingest/webhook", strings.NewReader(body))
+	resp := httptest.NewRecorder()
+
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.Code)
+	}
+	if target.called != 1 {
+		t.Fatalf("expected one delivery, got %d", target.called)
 	}
 }
 
